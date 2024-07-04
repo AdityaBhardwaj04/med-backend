@@ -21,7 +21,7 @@ app.json_encoder = JSONEncoder
 CORS(app)
 app.secret_key = 'omeyeclinic'
 
-uri = "mongodb://localhost:27017/"
+uri = "mongodb+srv://abdaditya10github:vrWls3ksMWhy5Csl@medicine-stock.fa4ulu1.mongodb.net/?retryWrites=true&w=majority&appName=Medicine-Stock"
 
 client = MongoClient(uri)
 try:
