@@ -21,7 +21,7 @@ app.json_encoder = JSONEncoder
 CORS(app)
 app.secret_key = 'omeyeclinic'
 
-uri = "mongodb://localhost:27017/"
+uri = "mongodb+srv://abdaditya10github:vrWls3ksMWhy5Csl@medicine-stock.fa4ulu1.mongodb.net/?retryWrites=true&w=majority&appName=Medicine-Stock"
 
 client = MongoClient(uri)
 try:
@@ -59,101 +59,108 @@ def stock():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/billing', methods=['POST'])
+@app.route('/billing', methods=['GET', 'POST'])
 def billing():
-    try:
-        data = request.json
-        patient_id = data.get('patient_id')
-        medicines = data.get('medicines')
-        total_discount = data.get('discount', 0)  # Overall discount in percentage
-        amount_accepted = data.get('amountAccepted', 0)
-        payment_mode = data.get('payment_mode', 'cash')  # Default payment mode is cash
+    if request.method == 'GET':
+        return jsonify({"message": "Welcome to billing endpoint. Use POST method to generate a bill."})
 
-        if not (patient_id and medicines):
-            return jsonify({"error": "Missing required data: patient_id and medicines are required."}), 400
+    elif request.method == 'POST':
+        try:
+            data = request.json
+            patient_id = data.get('patient_id')
+            medicines = data.get('medicines')
+            total_discount = data.get('discount', 0)  # Overall discount in percentage
+            amount_accepted = data.get('amountAccepted', 0)
+            payment_mode = data.get('payment_mode', 'cash')  # Default payment mode is cash
 
-        bill_items = []
-        total_amount = 0
+            if not (patient_id and medicines):
+                return jsonify({"error": "Missing required data: patient_id and medicines are required."}), 400
 
-        for item in medicines:
-            medicine_name = item.get('medicine_name')
-            qty_sold = item.get('qty_sold')
+            bill_items = []
+            total_amount = 0
 
-            if not (medicine_name and qty_sold):
-                return jsonify(
-                    {"error": "Missing required data in medicines: medicine_name and qty_sold are required."}), 400
+            for item in medicines:
+                medicine_name = item.get('medicine_name')
+                qty_sold = item.get('qty_sold')
 
+                if not (medicine_name and qty_sold):
+                    return jsonify({"error": "Missing required data in medicines: medicine_name and qty_sold are required."}), 400
+
+                try:
+                    qty_sold = int(qty_sold)
+                except ValueError:
+                    return jsonify({"error": f"Invalid quantity sold for {medicine_name}. It must be an integer."}), 400
+
+                # Assuming 'db' is your database connection or client
+                medicine = db['stock'].find_one({"product_name": medicine_name})
+                if not medicine:
+                    return jsonify({"error": f"Medicine '{medicine_name}' not found in stock."}), 400
+                if int(medicine.get('qty', 0)) < qty_sold:
+                    return jsonify({"error": f"Not enough stock for {medicine_name}"}), 400
+
+                new_qty = int(medicine['qty']) - qty_sold
+                db['stock'].update_one({"product_name": medicine_name}, {"$set": {"qty": new_qty}})
+
+                amount = int(medicine['mrp']) * qty_sold
+                bill_amount = amount - (int(total_discount) / 100) * amount
+                total_amount += bill_amount
+
+                bill_items.append({
+                    "medicine_name": medicine_name,
+                    "qty_sold": qty_sold,
+                    "qty_remaining": new_qty,
+                    "mrp": int(medicine['mrp']),
+                    "bill_amount": bill_amount,
+                })
+
+            # Convert total_discount to a float to ensure arithmetic operation is valid
             try:
-                qty_sold = int(qty_sold)
+                total_discount = float(total_discount)
+                amount_accepted = float(amount_accepted)
             except ValueError:
-                return jsonify({"error": f"Invalid quantity sold for {medicine_name}. It must be an integer."}), 400
+                return jsonify({"error": "Invalid discount. It must be a number."}), 400
 
-            medicine = db['stock'].find_one({"product_name": medicine_name})
-            if not medicine:
-                return jsonify({"error": f"Medicine '{medicine_name}' not found in stock."}), 400
-            if int(medicine.get('qty', 0)) < qty_sold:
-                return jsonify({"error": f"Not enough stock for {medicine_name}"}), 400
+            # Calculate the total discounted amount
+            total_discounted_amount = total_amount - (total_amount * total_discount / 100)
+            change = amount_accepted - total_discounted_amount
 
-            new_qty = int(medicine['qty']) - qty_sold
-            db['stock'].update_one({"product_name": medicine_name}, {"$set": {"qty": new_qty}})
+            # Generate a unique Bill Number
+            last_bill = db['transactions'].find_one(sort=[("bill_number", -1)])
+            if last_bill:
+                last_bill_number = int(last_bill['bill_number'].split('-')[1])
+                new_bill_number = f"BILL-{last_bill_number + 1}"
+            else:
+                new_bill_number = "BILL-1"
 
-            amount = int(medicine['mrp']) * qty_sold
-            bill_amount = amount - (int(total_discount) / 100) * amount
-            total_amount += bill_amount
+            transaction = {
+                "bill_number": new_bill_number,
+                "patient_id": patient_id,
+                "medicines": bill_items,
+                "total_amount": total_amount,
+                "total_discounted_amount": total_discounted_amount,
+                "amount_accepted": amount_accepted,
+                "change": change,
+                "payment_mode": payment_mode,  # Include payment mode in transaction document
+                "transaction_time": datetime.utcnow()
+            }
+            db['transactions'].insert_one(transaction)
 
-            bill_items.append({
-                "medicine_name": medicine_name,
-                "qty_sold": qty_sold,
-                "qty_remaining": new_qty,
-                "mrp": int(medicine['mrp']),
-                "bill_amount": bill_amount,
+            return jsonify({
+                "message": "Bill generated successfully!",
+                "bill_number": new_bill_number,
+                "total_amount": total_amount,
+                "total_discounted_amount": total_discounted_amount,
+                "amount_accepted": amount_accepted,
+                "change": change,
+                "bill_items": bill_items
             })
 
-        # Convert total_discount to a float to ensure arithmetic operation is valid
-        try:
-            total_discount = float(total_discount)
-            amount_accepted = float(amount_accepted)
-        except ValueError:
-            return jsonify({"error": "Invalid discount. It must be a number."}), 400
+        except Exception as e:
+            app.logger.error(e)
+            return jsonify({"error": str(e)}), 500
 
-        # Calculate the total discounted amount
-        total_discounted_amount = total_amount - (total_amount * total_discount / 100)
-        change = amount_accepted - total_discounted_amount
-
-        # Generate a unique Bill Number
-        last_bill = db['transactions'].find_one(sort=[("bill_number", -1)])
-        if last_bill:
-            last_bill_number = int(last_bill['bill_number'].split('-')[1])
-            new_bill_number = f"BILL-{last_bill_number + 1}"
-        else:
-            new_bill_number = "BILL-1"
-
-        transaction = {
-            "bill_number": new_bill_number,
-            "patient_id": patient_id,
-            "medicines": bill_items,
-            "total_amount": total_amount,
-            "total_discounted_amount": total_discounted_amount,
-            "amount_accepted": amount_accepted,
-            "change": change,
-            "payment_mode": payment_mode,  # Include payment mode in transaction document
-            "transaction_time": datetime.utcnow()
-        }
-        db['transactions'].insert_one(transaction)
-
-        return jsonify({
-            "message": "Bill generated successfully!",
-            "bill_number": new_bill_number,
-            "total_amount": total_amount,
-            "total_discounted_amount": total_discounted_amount,
-            "amount_accepted": amount_accepted,
-            "change": change,
-            "bill_items": bill_items
-        })
-    except Exception as e:
-        app.logger.error(e)
-        return jsonify({"error": str(e)}), 500
-
+    else:
+        return jsonify({"error": "Method not allowed."}), 405
 
 @app.route('/sales', methods=['GET'])
 def sales():
